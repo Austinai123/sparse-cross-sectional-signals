@@ -1,0 +1,27 @@
+[project]
+name = "sparse cross sectional signals"
+description = "Replication and extension of Chinco, Clark-Joseph and Ye (2019), Sparse Signals in the Cross-Section of Returns"
+maintainer = "Jarin Sutton"
+contributors = ["Jarin Sutton"]
+os_compatibility = ["Windows", "Linux", "macOS"]
+requires_chartbook = ">=0.4.0"
+
+[scripts]
+build = "doit"
+
+[notebooks]
+
+
+[notebooks.01_example_notebook_interactive]
+name = "Example Notebook Interactive"
+description = "Example notebook for demonstrating how to construct a Chartbook notebook."
+path = "_output/01_example_notebook_interactive.ipynb"
+
+
+
+
+[dataframes]
+
+
+[charts]
+
