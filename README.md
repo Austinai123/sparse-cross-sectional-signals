@@ -1,4 +1,4 @@
-sparse cross sectional signals
+Sparse Cross Sectional Signals
 ==============================
 
 ## About this project
