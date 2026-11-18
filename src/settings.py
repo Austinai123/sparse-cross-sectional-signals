@@ -41,9 +41,9 @@ and compare to
 
 """
 
+import getpass
 import sys
 from datetime import datetime
-import getpass
 from pathlib import Path
 from platform import system
 
@@ -118,9 +118,7 @@ def get_os():
     os_name = system()
     if os_name == "Windows":
         return "windows"
-    elif os_name == "Darwin":
-        return "nix"
-    elif os_name == "Linux":
+    elif os_name == "Darwin" or os_name == "Linux":
         return "nix"
     else:
         return "unknown"
@@ -167,8 +165,34 @@ else:
 # Two people with different .env files who build the same commit must produce
 # identical output, so the analysis window is fixed in version control and
 # changed only by editing this file.
-START_DATE = datetime.strptime("1913-01-01", "%Y-%m-%d")
-END_DATE = datetime.strptime("2024-12-31", "%Y-%m-%d")
+
+
+# Full span the pipeline covers: the paper's sample plus the update window.
+# Data pulls (CRSP, TAQ) use these; the replication exhibits subset to the
+# paper window below.
+START_DATE = datetime.strptime("2005-01-01", "%Y-%m-%d")
+END_DATE = datetime.strptime("2025-12-31", "%Y-%m-%d")
+
+# Replication subsample. Chinco, Clark-Joseph and Ye (2019), Section II.A:
+# "every trading day from January 2005 to December 2012."
+PAPER_START_DATE = datetime.strptime("2005-01-01", "%Y-%m-%d")
+PAPER_END_DATE = datetime.strptime("2012-12-31", "%Y-%m-%d")
+
+# Which trading days the minute panel is built for. A LASSO per stock per
+# minute over all 2,013 days of the paper's sample is a cluster job; "monthly"
+# builds the first trading day of each month instead, which is 96 days and runs
+# end to end on one machine in about an hour. Set to "all" for the full sample.
+# This is a committed constant, not a .env setting, so that everyone building
+# this commit produces the same panel.
+PANEL_FREQUENCY = "monthly"
+
+# Seed for choosing which day within each month "monthly" samples. Taking the
+# *first* trading day of each month would sample only turn-of-the-month days,
+# which carry a documented return, volume and flow anomaly; any result computed
+# on such a subsample would inherit that bias. One random day per month,
+# stratified so the sample still spans the whole period, avoids it. Committed
+# so the draw is identical for everyone building this commit.
+PANEL_SAMPLE_SEED = 20051203
 
 
 ## File paths
@@ -250,8 +274,16 @@ def config(
         return default_value
 
     # 4. Use the default value provided in the local file. Error if not found
+    #
+    # decouple treats `cast` as a callable and applies it unconditionally, so
+    # forwarding cast=None raises "'NoneType' object is not callable" and turns
+    # every `config(var, default=...)` call into an error regardless of the
+    # default. Only forward `cast` when one was actually asked for.
     try:
-        return _config(var_name, default=default, cast=cast)
+        kwargs = {"default": default}
+        if cast is not None:
+            kwargs["cast"] = cast
+        return _config(var_name, **kwargs)
     except Exception as e:
         raise ValueError(
             f"Configuration variable '{var_name}' is not defined. "

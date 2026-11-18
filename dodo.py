@@ -16,6 +16,7 @@ from os import environ
 from pathlib import Path
 
 from settings import config
+from trading_calendar import panel_dates
 
 DOIT_CONFIG = {"backend": "sqlite3", "dep_file": "./.doit-db.sqlite"}
 
@@ -27,8 +28,13 @@ OUTPUT_DIR = config("OUTPUT_DIR")
 OS_TYPE = config("OS_TYPE")
 USER = config("USER")
 
+# Trading days the panel covers. Derived from the exchange calendar, so doit
+# can build the task list before any data exists.
+PANEL_DATES = panel_dates()
+
 ## Helpers for handling Jupyter Notebook tasks
 environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
+
 
 # fmt: off
 ## Helper functions for automatic execution of Jupyter notebooks
@@ -86,63 +92,106 @@ def task_config():
 
 
 def task_pull():
-    """Pull data from external sources"""
+    """Pull raw data from WRDS."""
     yield {
-        "name": "crsp_stock",
-        "doc": "Pull CRSP stock data from WRDS",
-        "actions": [
-            "python ./src/settings.py",
-            "python ./src/pull_CRSP_stock.py",
+        "name": "crsp_daily",
+        "doc": "CRSP daily stock file and the CRSP-TAQ symbol link",
+        "actions": ["python ./src/pull_crsp_daily.py"],
+        "targets": [
+            DATA_DIR / "crsp_daily.parquet",
+            DATA_DIR / "taq_crsp_link.parquet",
         ],
-        "targets": [DATA_DIR / "CRSP_monthly_stock.parquet"],
-        "file_dep": ["./src/settings.py", "./src/pull_CRSP_stock.py"],
-        "clean": [],
+        "file_dep": ["./src/settings.py", "./src/pull_crsp_daily.py"],
+        "clean": True,
     }
 
 
-def task_summary_stats():
-    """Generate summary statistics tables"""
-    file_dep = ["./src/example_table.py"]
-    file_output = [
-        "example_table.tex",
-        "pandas_to_latex_simple_table1.tex",
+def task_universe():
+    """Apply the paper's sample screens to pick the stocks in each day."""
+    return {
+        "actions": ["python ./src/build_universe.py"],
+        "targets": [
+            DATA_DIR / "universe.parquet",
+            DATA_DIR / "universe_attrition.parquet",
+        ],
+        "file_dep": [
+            "./src/settings.py",
+            "./src/build_universe.py",
+            DATA_DIR / "crsp_daily.parquet",
+            DATA_DIR / "taq_crsp_link.parquet",
+        ],
+        "clean": True,
+    }
+
+
+def task_minute_panel():
+    """Build the one-minute return panel, one task per trading day.
+
+    One task per day so that a failed or added day rebuilds on its own instead
+    of re-pulling the whole sample, and so the same tasks can be farmed out to
+    a cluster job array.
+    """
+    for date in PANEL_DATES:
+        stamp = date.strftime("%Y%m%d")
+        yield {
+            "name": stamp,
+            "actions": [f"python ./src/run_minute_panel.py {date:%Y-%m-%d}"],
+            "targets": [
+                DATA_DIR / "minute_panel" / f"returns_{stamp}.parquet",
+                DATA_DIR / "minute_panel" / f"coverage_{stamp}.parquet",
+            ],
+            "file_dep": [
+                "./src/settings.py",
+                "./src/build_minute_panel.py",
+                "./src/run_minute_panel.py",
+                "./src/pull_taq_minute_bars.py",
+                DATA_DIR / "universe.parquet",
+            ],
+            "clean": True,
+        }
+
+
+def task_panel_exhibits():
+    """Summary tables and the coverage figure for the minute panel."""
+    coverage_files = [
+        DATA_DIR / "minute_panel" / f"coverage_{d:%Y%m%d}.parquet" for d in PANEL_DATES
     ]
-    targets = [OUTPUT_DIR / file for file in file_output]
-
-    return {
-        "actions": [
-            "python ./src/example_table.py",
-            "python ./src/pandas_to_latex_demo.py",
+    yield {
+        "name": "summary_table",
+        "actions": ["python ./src/table_panel_summary.py"],
+        "targets": [
+            OUTPUT_DIR / "table_panel_summary.tex",
+            OUTPUT_DIR / "table_universe_attrition.tex",
         ],
-        "targets": targets,
-        "file_dep": file_dep,
+        "file_dep": [
+            "./src/table_panel_summary.py",
+            DATA_DIR / "universe_attrition.parquet",
+            *coverage_files,
+        ],
+        "clean": True,
+    }
+    yield {
+        "name": "staleness_sensitivity",
+        "doc": "Measures what the stale-price cutoff costs the panel",
+        "actions": ["python ./src/table_staleness_sensitivity.py"],
+        "targets": [OUTPUT_DIR / "table_staleness_sensitivity.tex"],
+        "file_dep": [
+            "./src/table_staleness_sensitivity.py",
+            "./src/build_minute_panel.py",
+            DATA_DIR / "universe.parquet",
+        ],
+        "clean": True,
+    }
+    yield {
+        "name": "coverage_figure",
+        "actions": ["python ./src/figure_coverage.py"],
+        "targets": [OUTPUT_DIR / "figure_coverage.png"],
+        "file_dep": ["./src/figure_coverage.py", *coverage_files],
         "clean": True,
     }
 
 
-def task_example_plot():
-    """Example plots"""
-    file_dep = [Path("./src") / file for file in ["example_plot.py"]]
-    file_output = ["example_plot.png"]
-    targets = [OUTPUT_DIR / file for file in file_output]
-
-    return {
-        "actions": [
-            "python ./src/example_plot.py",
-        ],
-        "targets": targets,
-        "file_dep": file_dep,
-        "clean": True,
-    }
-
-
-notebook_tasks = {
-    "01_example_notebook_interactive.ipynb.py": {
-        "path": "./src/01_example_notebook_interactive.ipynb.py",
-        "file_dep": [],
-        "targets": [],
-    },
-}
+notebook_tasks = {}
 
 
 # fmt: off
@@ -150,7 +199,7 @@ def task_run_notebooks():
     """Preps the notebooks for presentation format.
     Execute notebooks if the script version of it has been changed.
     """
-    for notebook in notebook_tasks.keys():
+    for notebook in notebook_tasks:
         pyfile_path = Path(notebook_tasks[notebook]["path"])
         notebook_path = pyfile_path.with_suffix("")  # strips .py, leaves .ipynb
         notebook_name = notebook_path.stem  # e.g. "01_example_notebook_interactive"
@@ -191,11 +240,6 @@ def task_compile_latex_docs():
         "./reports/my_common_header.sty",
         "./reports/report_simple_example.tex",
         "./reports/slides_simple_example.tex",
-        # Generated inputs. The reports typeset a placeholder for a missing one
-        # instead of failing, so list them here to have doit build them first.
-        OUTPUT_DIR / "example_plot.png",
-        OUTPUT_DIR / "example_table.tex",
-        OUTPUT_DIR / "pandas_to_latex_simple_table1.tex",
     ]
     targets = [
         "./reports/report_example.pdf",
@@ -222,6 +266,7 @@ def task_compile_latex_docs():
         "clean": True,
     }
 
+
 sphinx_targets = [
     "./docs/index.html",
 ]
@@ -230,8 +275,7 @@ sphinx_targets = [
 def task_build_chartbook_site():
     """Compile Sphinx Docs"""
     notebook_scripts = [
-        Path(notebook_tasks[notebook]["path"])
-        for notebook in notebook_tasks.keys()
+        Path(notebook_tasks[notebook]["path"]) for notebook in notebook_tasks
     ]
     file_dep = [
         "./README.md",
@@ -262,6 +306,7 @@ def task_run_pytest():
 
         result = subprocess.run(
             ["pytest", f"--junitxml={test_output}"],
+            check=False,  # returncode is handled below
         )
         if result.returncode != 0:
             # Remove the XML so doit won't consider the target up-to-date
