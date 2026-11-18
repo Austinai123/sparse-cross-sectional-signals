@@ -1,85 +1,166 @@
 sparse cross sectional signals
 ==============================
 
-## About this project
+Replication and extension of Chinco, Clark-Joseph and Ye (2019), "Sparse Signals
+in the Cross-Section of Returns," *Journal of Finance* 74(1), 449-492.
 
-Replication and extension of Chinco, Clark-Joseph and Ye (2019), Sparse Signals in the Cross-Section of Returns
+## What the paper claims
 
-## Quick Start
+Hand the LASSO the entire cross-section of lagged one-minute returns, with no
+economic prior about which stocks should matter, and ask it to forecast each
+stock's return one minute ahead. It works: out-of-sample fit and
+forecast-implied Sharpe ratios both rise, and the predictors it picks are not
+noise -- they tend to be stocks with fresh news about fundamentals.
 
-The quickest way to run code in this repo is to use the following steps.
+## Requirements
 
-You must have TexLive (or another LaTeX distribution) installed on your computer and available in your path.
-You can do this by downloading and installing it from here ([windows](https://tug.org/texlive/windows.html#install)
-and [mac](https://tug.org/mactex/mactex-download.html) installers).
+- Python 3.12
+- A WRDS account with access to TAQ (`taqm_*`) and CRSP (`crsp.dsf_v2`)
+- A LaTeX distribution on your PATH, for the report
+  ([Windows](https://tug.org/texlive/windows.html#install),
+  [Mac](https://tug.org/mactex/mactex-download.html))
 
+## Setup
 
-First, create a virtual environment and activate it:
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-Then install the dependencies:
-```bash
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Finally, run the project tasks:
+Copy `.env.example` to `.env` and set `WRDS_USERNAME` to your WRDS login.
+Then create the WRDS password file once, interactively:
+
+```bash
+python -c "import wrds; wrds.Connection(wrds_username='YOUR_USERNAME')"
+```
+
+Enter your password and answer `y` when it offers to create `.pgpass`. The rest
+of the pipeline runs unattended after this.
+
+Note that `START_DATE`, `END_DATE` and `PANEL_FREQUENCY` are committed constants
+in `src/settings.py`, deliberately *not* read from `.env`, so that two people
+with different `.env` files who build the same commit get the same output.
+
+## Running it
+
 ```bash
 doit
 ```
-And that's it!
 
+That runs, in order:
 
-### Other commands
+| Task | What it does | Roughly |
+|---|---|---|
+| `pull:crsp_daily` | CRSP daily stock file and the CRSP-TAQ symbol link | 3 min |
+| `universe` | Applies the paper's sample screens, day by day | 1 min |
+| `minute_panel` | TAQ trades to one-minute returns, one task per trading day | 45 s per day |
+| `panel_exhibits` | Summary tables and the coverage figure | seconds |
+| `run_pytest` | Unit tests and data validation | seconds |
 
-#### Unit Tests and Doc Tests
+`PANEL_FREQUENCY = "monthly"` in `src/settings.py` builds one randomly chosen
+trading day from each month, 96 days, which finishes in about an hour. The day
+is drawn at random rather than taken as the first of the month, because
+sampling the first trading day would select only turn-of-the-month days, which
+carry a documented return and volume anomaly. The draw is seeded by
+`PANEL_SAMPLE_SEED`, also a committed constant, so everyone gets the same days. Set it to `"all"` for
+the paper's full 2,013-day sample; that is roughly 25 hours single-threaded and
+is meant for a cluster job array, one task per day.
 
-You can run the unit test, including doctests, with the following command:
-```
-pytest --doctest-modules
-```
+## Data sources
 
-You can build the documentation with:
-```
-rm ./src/.pytest_cache/README.md
-jupyter-book build -W ./
-```
-Use `del` instead of rm on Windows
+| Source | Table | Used for |
+|---|---|---|
+| TAQ (WRDS) | `taqm_<year>.ctm_<yyyymmdd>` | Trades, aggregated to one-minute bars |
+| CRSP (WRDS) | `crsp.dsf_v2` | Sample screens, and the volume reconciliation |
+| CRSP-TAQ link (WRDS) | `wrdsapps_link_crsp_taqm.taqmclink` | Share class for dual-class tickers |
 
+## Sample definition
 
-#### Setting Environment Variables
+Section II.A of the paper: NYSE-listed stocks, every trading day from January
+2005 to December 2012, dropping stocks priced below $5 at the previous day's
+close. Our screens and what each removes are in
+`_output/table_universe_attrition.tex`.
 
-You can [export your environment variables](https://stackoverflow.com/questions/43267413/how-to-set-environment-variables-from-env-file)
-from your `.env` files like so, if you wish. This can be done easily in a Linux or Mac terminal with the following command:
-```bash
-set -a  # automatically export all variables
-source .env
-set +a
-```
-On Windows (PowerShell):
-```powershell
-Get-Content .env | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') } }
-```
+## Choices the paper does not make for us
 
-### Formatting
+The paper is silent on several things that materially affect the panel. Each is
+recorded here, implemented in one place, and measured rather than assumed.
 
-This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting Python code.
+**Minute bars.** Bar `t` is the last trade price in `[t, t+1)`, labelled by its
+starting minute. A full session is 390 bars (09:30-15:59) and 389 returns.
+Labelling bars by their closing minute instead would shift every return by one
+minute. Returns are simple, not log, and nothing is carried across days, so the
+overnight return never enters.
 
-```bash
-# Auto-fix linting issues (e.g., unused imports, undefined names)
-ruff check . --fix
+**Minutes with no trade.** Prices are carried forward within the day, never
+backward. A return is kept only if the stock actually traded in that minute --
+a quiet minute is recorded as missing, not as a zero return -- and only if the
+previous price is at most `MAX_STALENESS_MINUTES` (5) old. Past that the
+"one-minute" return really spans several minutes. Five is a round number rather
+than a derived one, so `table_staleness_sensitivity.tex` measures what it costs:
+dropping the cutoff entirely recovers 0.67% of returns and moves their standard
+deviation by 1.6%, so the choice is immaterial. Tightening it to one minute is
+materially stricter, costing 4% of returns.
 
-# Format code (consistent style, spacing, line length)
-ruff format .
+**Trade filters.** The paper does not state its trade filters. We keep
+correction code `00` and drop about twenty sale conditions: auction prints,
+average-price trades, next-day settlement, out-of-sequence reports and
+extended-hours trading. Excluding the closing auction print is how the paper's
+instruction to drop the last minute of each day is implemented.
 
-# Sort imports, then fix linting issues, then format
-ruff format . && ruff check --select I --fix . && ruff check --fix .
-```
+**Matching CRSP to TAQ.** The primary key is the CRSP ticker, which equals TAQ's
+`sym_root` for 99.9% of eligible stock-days. WRDS's daily link table is *not*
+used as the primary match: it omits whole categories of stock, including every
+REIT, and using it drops about 9% of the sample. Dual-class stocks, where two
+permnos share one ticker, are dropped (1.7% of stock-days) rather than guessed
+at, because the link table's share-class suffix can name a preferred issue --
+Constellation Brands resolves to `STZ PRA`, whose volume is 1% of CRSP's.
 
-- `ruff check --fix` applies safe auto-fixes for linting violations
-- `ruff format` formats code similar to Black
-- `--select I` targets only import sorting rules (isort-compatible)
+**Universe breadth.** We restrict to ordinary common stock, which gives about
+1,350 stocks a day. The paper says "roughly N = 2,000 NYSE-listed stocks,"
+suggesting it also includes ADRs and closed-end funds. The screens are a single
+dict at the top of `src/build_universe.py` if you want to widen them.
+
+## Caching
+
+Minute bars are kept in `_data/taq_bars/` as they are pulled, about 4 MB a day
+against 45 seconds of WRDS time. Changing the return convention -- the
+staleness rule, the bar labelling, simple against log returns -- then re-derives
+the panel from cached bars in seconds rather than re-pulling the sample. Pass
+`--no-cache` to `run_minute_panel.py` to force a fresh query.
+
+## Validation
+
+`src/test_validate_panel.py` checks the data against CRSP rather than against
+our own code. The strongest check is an identity: because our trade filters keep
+a strict subset of the consolidated tape, per-stock TAQ volume can never exceed
+CRSP's. For IBM on 2005-01-03 the whole tape less corrected trades reconciles to
+CRSP's daily volume exactly, 5,301,400 shares. Across the sample the median
+TAQ/CRSP volume ratio is 0.94, the shortfall being the auction and
+irregular-condition volume we remove on purpose.
+
+These tests skip, rather than fail, when the pulled data is absent, which is how
+they behave in CI where there are no WRDS credentials.
+
+## Code layout
+
+| File | Purpose |
+|---|---|
+| `src/settings.py` | Paths, credentials, and the committed analysis constants |
+| `src/pull_crsp_daily.py` | CRSP daily file and the CRSP-TAQ link |
+| `src/build_universe.py` | Sample screens and the filter attrition record |
+| `src/trading_calendar.py` | NYSE session times and the sampled trading days |
+| `src/pull_taq_minute_bars.py` | One day of TAQ trades, aggregated to minute bars in SQL |
+| `src/build_minute_panel.py` | Bars to one-minute returns, plus per-day coverage |
+| `src/run_minute_panel.py` | Driver: pull, screen, clean and write one day |
+| `src/table_staleness_sensitivity.py` | What the stale-price cutoff costs |
+| `src/table_panel_summary.py` | Summary and attrition tables |
+| `src/figure_coverage.py` | Coverage figure |
+| `src/test_*.py` | Unit tests and data validation |
+
+Data cleaning (`pull_*`, `build_*`) is kept separate from analysis
+(`table_*`, `figure_*`).
 
 ### General Directory Structure
 

@@ -12,16 +12,60 @@ build = "doit"
 [notebooks]
 
 
-[notebooks.01_example_notebook_interactive]
-name = "Example Notebook Interactive"
-description = "Example notebook for demonstrating how to construct a Chartbook notebook."
-path = "_output/01_example_notebook_interactive.ipynb"
-
 
 
 
 [dataframes]
 
+[dataframes.universe]
+name = "Sample universe"
+description = """One row per eligible stock-day: the NYSE common stocks priced above $5 at the previous close that are matched to a TAQ symbol. This is the cross-section the LASSO draws its candidate predictors from."""
+sources = ["CRSP Daily Stock File (WRDS)", "CRSP-TAQ Link (WRDS)"]
+providers = ["CRSP", "WRDS"]
+access_types = ["Subscription", "Subscription"]
+contact_required = ["No", "No"]
+pre_approved = ["Yes", "Yes"]
+pull_method = "SQL via the wrds Python package"
+tags = ["Universe", "CRSP", "NYSE"]
+date_col = "date"
+path = "./_data/universe.parquet"
+
+[dataframes.universe_attrition]
+name = "Sample screen attrition"
+description = """How many stock-days each sample screen removes, in order. Shows that the share-type screen is the large one, the paper's $5 screen removes 6.5%, and matching to TAQ costs 3.4%."""
+sources = ["CRSP Daily Stock File (WRDS)"]
+providers = ["CRSP"]
+access_types = ["Subscription"]
+contact_required = ["No"]
+pre_approved = ["Yes"]
+pull_method = "Derived from the universe build"
+tags = ["Validation", "Filters"]
+path = "./_data/universe_attrition.parquet"
+
+[dataframes.panel_coverage]
+name = "Minute panel coverage"
+description = """One row per stock-day recording how much of the trading session the stock actually traded in, how many minutes were carried forward, how many returns survived the staleness rule, and the mean and standard deviation of its one-minute returns. The summary table and coverage figure are built from this rather than from the full return panel."""
+sources = ["NYSE TAQ (WRDS)", "CRSP Daily Stock File (WRDS)"]
+providers = ["NYSE", "CRSP"]
+access_types = ["Subscription", "Subscription"]
+contact_required = ["No", "No"]
+pre_approved = ["Yes", "Yes"]
+pull_method = "TAQ trades aggregated to minute bars in SQL, then differenced"
+tags = ["TAQ", "Coverage", "Validation"]
+date_col = "date"
+path = "./_data/minute_panel/coverage_20050103.parquet"
+
 
 [charts]
+
+[charts.coverage]
+name = "Panel coverage through time"
+description = """Stocks passing the sample screens on each trading day, and the share of the session in which they actually traded. Both series move for economic reasons: the cross-section thins to 1,057 stocks in early 2009 as the $5 screen bites during the crisis, and the share of minutes traded rises from 79% to 97% as algorithmic trading fills in previously quiet minutes. A single day falling off a cliff while its neighbours did not would be a pipeline failure; neither of these is."""
+dataframe = "panel_coverage"
+tags = ["TAQ", "Coverage", "Validation"]
+frequency = "Daily"
+observation_period = "Trading day"
+units = "Count; percent of session minutes"
+series = ["Stocks in sample", "Session minutes traded"]
+path = "./_output/figure_coverage.png"
 
